@@ -344,13 +344,18 @@ reparent(struct proc *p)
 // An exited process remains in the zombie state
 // until its parent calls wait().
 void
-exit(int status)
+exit(int status, char* msg)
 {
   struct proc *p = myproc();
 
-  if(p == initproc)
+  if(p == initproc){
     panic("init exiting");
-
+  }
+  // Copy the exit message to the PCB
+  if(msg)
+    strncpy(p->exit_msg, msg, 32);
+  else
+    p->exit_msg[0] = '\0';
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -388,7 +393,7 @@ exit(int status)
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
 int
-wait(uint64 addr)
+wait(uint64 addr , uint64 msgaddr)
 {
   struct proc *pp;
   int havekids, pid;
@@ -410,6 +415,12 @@ wait(uint64 addr)
           pid = pp->pid;
           if(addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
                                   sizeof(pp->xstate)) < 0) {
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+          if(msgaddr != 0 && copyout(p->pagetable, msgaddr, pp->exit_msg,
+            sizeof(pp->exit_msg)) < 0) {
             release(&pp->lock);
             release(&wait_lock);
             return -1;
@@ -680,4 +691,167 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+//Task 4
+//implementation of forkn system call
+int forkn(int n, int *pids) {
+  struct proc *parent = myproc();
+  struct proc *child;
+  int i;
+  int child_pid;
+  //synchronization object for coordinated child start
+  void *sync_channel = parent; //using parent as sync object is more reliable
+
+  //validate input parameters
+  if (n < 1 || n > 16) {
+    return -1; //invalid number of processes requested
+  }
+  
+  //protect multi-process creation with wait_lock
+  acquire(&wait_lock);
+  
+  //first create all child processes before making them runnable
+  for (i = 0; i < n; i++) {
+    //allocate a new process
+    child = allocproc();
+    if (child == 0) {
+      printf("forkn: Failed to allocate process %d of %d\n", i+1, n);
+      release(&wait_lock);
+      return -1;
+    }
+    //copy memory from parent to child
+    if (uvmcopy(parent->pagetable, child->pagetable, parent->sz) < 0) {
+      release(&child->lock);
+      freeproc(child);
+      release(&wait_lock);
+      return -1;
+    }
+    child->sz = parent->sz; //set child attributes
+    //copy trapframe and set child's return value
+    *(child->trapframe) = *(parent->trapframe);
+    child->trapframe->a0 = i+1;  // Child gets its 1-based index
+    //copy file descriptors
+    for (int fd = 0; fd < NOFILE; fd++) {
+      if (parent->ofile[fd]) {
+        child->ofile[fd] = filedup(parent->ofile[fd]);
+      }
+    }
+    
+    //copy current directory
+    child->cwd = idup(parent->cwd);
+    //copy process name
+    safestrcpy(child->name, parent->name, sizeof(child->name));
+    //set parent-child relationship
+    child->parent = parent;
+    
+    //store PID in user-provided array
+    child_pid = child->pid;
+    if (copyout(parent->pagetable, (uint64)(&pids[i]), (char *)&child_pid, sizeof(int)) < 0) {
+      release(&child->lock);
+      freeproc(child);
+      release(&wait_lock);
+      return -1;
+    }
+    
+    //put the child to sleep until all siblings are created
+    child->chan = sync_channel;
+    child->state = SLEEPING;
+    
+    release(&child->lock);
+  }
+  
+  //wake up all children simultaneously to make them runnable
+  wakeup(sync_channel);
+  
+  release(&wait_lock); //success - release lock and return
+  return 0;
+}
+
+
+//Task 4
+//implementation of waitall system call
+int waitall(uint64 count_addr, uint64 status_array) {
+  struct proc *parent = myproc();
+  struct proc *child;
+  int collected = 0;
+  int has_children = 0;
+  acquire(&wait_lock); //acquire the wait lock for process synchronization
+  
+  //first check if we have any children at all
+  for (child = proc; child < &proc[NPROC]; child++) {
+    if (child->parent == parent && child->state != UNUSED) {
+      has_children = 1;
+      break;
+    }
+  }
+  
+  if (!has_children) {
+    //no children to wait for
+    int zero = 0;
+    if (copyout(parent->pagetable, count_addr, (char *)&zero, sizeof(int)) < 0) {
+      release(&wait_lock);
+      return -1;
+    }
+    release(&wait_lock);
+    return 0;
+  }
+  
+  //wait until all children have terminated
+  while (1) {
+    int active_children = 0;
+    for (child = proc; child < &proc[NPROC]; child++) {
+      if (child->parent == parent && child->state != ZOMBIE && child->state != UNUSED) {
+        active_children++;
+      }
+    }
+    //all children are now zombies or have been already collected
+    if (active_children == 0) {
+      break;
+    }
+    //sleep until a child changes state
+    sleep(parent, &wait_lock);
+    //sheck if we were killed while sleeping
+    if (killed(parent)) {
+      release(&wait_lock);
+      return -1;
+    }
+  }
+  
+  //process all zombie children
+  for (child = proc; child < &proc[NPROC]; child++) {
+    if (child->parent == parent && child->state == ZOMBIE) {
+      acquire(&child->lock);
+      
+      //copy exit status to user space if requested
+      if (status_array != 0 && 
+          copyout(parent->pagetable, status_array + collected * sizeof(int),
+                 (char *)&child->xstate, sizeof(int)) < 0) {
+        release(&child->lock);
+        release(&wait_lock);
+        return -1;
+      }
+      collected++;
+      //free the process resources
+      freeproc(child);
+      release(&child->lock);
+    }
+  }
+  
+  //for debugging
+  if (collected > 0) {
+    printf("waitall: collected %d child statuses\n", collected);
+  }
+  
+  //return the number of children collected through the pointer
+  if (copyout(parent->pagetable, count_addr, (char *)&collected, sizeof(int)) < 0) {
+    release(&wait_lock);
+    return -1;
+  }
+  
+  release(&wait_lock);
+
+
+  return 0;
 }

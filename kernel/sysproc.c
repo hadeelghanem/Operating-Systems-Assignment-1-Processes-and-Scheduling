@@ -5,13 +5,20 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "syscall.h"
+
+extern struct proc proc[NPROC];
 
 uint64
 sys_exit(void)
 {
   int n;
+  char exitmsg[32];
   argint(0, &n);
-  exit(n);
+  if(argstr(1, exitmsg, sizeof(exitmsg)) < 0) {
+    exitmsg[0] = '\0';
+  }
+  exit(n,exitmsg);
   return 0;  // not reached
 }
 
@@ -31,8 +38,10 @@ uint64
 sys_wait(void)
 {
   uint64 p;
+  uint64 msg; // added ,Task 3
   argaddr(0, &p);
-  return wait(p);
+  argaddr(1,&msg);
+  return wait(p, msg);
 }
 
 uint64
@@ -88,4 +97,42 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+//added,Task2 
+uint64
+sys_memsize(void)
+{
+  return myproc() ->sz;  // Return memsize
+}
+
+
+//task 4
+uint64
+sys_forkn(void)
+{
+  int x;
+  uint64 pids_addr;
+  argint(0, &x);
+  argaddr(1, &pids_addr);
+  
+  
+  //validate parameters
+  if(x < 1 || x > 16 || pids_addr == 0)
+    return -1;
+    
+  return forkn(x, (int*)pids_addr);
+}
+
+//task 4
+uint64
+sys_waitall(void)
+{
+  uint64 n_addr;
+  uint64 statuses_addr;
+  argaddr(0, &n_addr);
+  argaddr(1, &statuses_addr);
+  
+    
+  return waitall(n_addr, statuses_addr);
 }

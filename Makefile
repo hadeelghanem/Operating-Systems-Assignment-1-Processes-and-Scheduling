@@ -118,6 +118,8 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 UPROGS=\
 	$U/_cat\
 	$U/_echo\
+	$U/_helloworld\
+	$U/_bigarray\
 	$U/_forktest\
 	$U/_grep\
 	$U/_init\
@@ -132,6 +134,11 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_memsize_test\
+	$U/_goodbye\
+	
+
+		
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

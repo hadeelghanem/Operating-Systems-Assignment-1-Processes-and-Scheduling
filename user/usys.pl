@@ -36,3 +36,7 @@ entry("getpid");
 entry("sbrk");
 entry("sleep");
 entry("uptime");
+entry("memsize");
+entry("forkn"); #task 4
+entry("waitall"); #task 4
+
