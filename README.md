@@ -1,4 +1,4 @@
-# Operating Systems (202.1.3031) – Assignment 1: Processes and Scheduling
+# Operating Systems – Assignment 1: Processes and Scheduling
 
 This repository contains my solution for **Assignment 1** of the Operating Systems course.  
 It is based on **xv6-riscv** and extends the kernel and user space with new system calls and programs related to processes and scheduling.
